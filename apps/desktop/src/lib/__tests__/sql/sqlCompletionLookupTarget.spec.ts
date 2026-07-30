@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getSqlCompletionContext } from "@/lib/sql/sqlCompletion";
-import { resolveSqlCompletionRoutineLookupTarget, resolveSqlCompletionTableLookupTarget } from "@/lib/sql/sqlCompletionLookupTarget";
+import { resolveSqlCompletionRoutineLookupTarget, resolveSqlCompletionSchemaLookupDatabase, resolveSqlCompletionTableLookupTarget } from "@/lib/sql/sqlCompletionLookupTarget";
 
 describe("sqlCompletionLookupTarget", () => {
   it("treats qualified table completion as a database lookup for MySQL-compatible engines", () => {
@@ -97,6 +97,43 @@ describe("sqlCompletionLookupTarget", () => {
     });
 
     expect(target).toEqual({ database: "app", schema: "sales", filter: "ord" });
+  });
+
+  it("routes a SQL Server database qualifier to schema completion", () => {
+    const completionContext = getSqlCompletionContext("select * from reporting.d", "select * from reporting.d".length);
+
+    expect(
+      resolveSqlCompletionSchemaLookupDatabase({
+        supportsDatabaseSchemaQualifier: true,
+        knownDatabases: ["Default_DB", "Reporting"],
+        completionContext,
+      }),
+    ).toBe("Reporting");
+  });
+
+  it("does not mistake a current-database schema for a database", () => {
+    const completionContext = getSqlCompletionContext("select * from dbo.", "select * from dbo.".length);
+
+    expect(
+      resolveSqlCompletionSchemaLookupDatabase({
+        supportsDatabaseSchemaQualifier: true,
+        knownDatabases: ["Default_DB", "Reporting"],
+        completionContext,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("prefers a current-database schema when a database has the same name", () => {
+    const completionContext = getSqlCompletionContext("select * from dbo.", "select * from dbo.".length);
+
+    expect(
+      resolveSqlCompletionSchemaLookupDatabase({
+        supportsDatabaseSchemaQualifier: true,
+        knownDatabases: ["dbo", "Reporting"],
+        knownSchemas: ["dbo", "sales"],
+        completionContext,
+      }),
+    ).toBeUndefined();
   });
 
   it("uses the current schema for unqualified table completion", () => {

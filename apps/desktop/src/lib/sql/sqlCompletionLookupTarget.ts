@@ -16,6 +16,21 @@ function findExactName(names: readonly string[] | undefined, value: string): str
   return names?.find((name) => name.toLowerCase() === value.toLowerCase());
 }
 
+export function resolveSqlCompletionSchemaLookupDatabase(options: {
+  supportsDatabaseSchemaQualifier?: boolean;
+  completionContext: Pick<SqlCompletionContext, "qualifier" | "qualifierParts" | "suggestTables" | "insertTable">;
+  knownDatabases?: readonly string[];
+  knownSchemas?: readonly string[];
+}): string | undefined {
+  const { completionContext } = options;
+  if (!options.supportsDatabaseSchemaQualifier || !completionContext.suggestTables || completionContext.insertTable) return undefined;
+  const qualifier = completionContext.qualifier?.trim();
+  const qualifierParts = completionContext.qualifierParts?.filter(Boolean) ?? qualifier?.split(".").filter(Boolean) ?? [];
+  if (qualifierParts.length !== 1) return undefined;
+  if (findExactName(options.knownSchemas, qualifierParts[0]!)) return undefined;
+  return findExactName(options.knownDatabases, qualifierParts[0]!);
+}
+
 export function resolveSqlCompletionTableLookupTarget(options: {
   currentDatabase: string;
   currentSchema?: string;
