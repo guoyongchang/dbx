@@ -49,10 +49,13 @@ function filterSidebarTreeWithMatcher(nodes: TreeNode[], matchLabel: SidebarLabe
     // Type-only filtering keeps matching rows and their ancestor path, but not
     // unrelated descendants that would make the selected type appear ignored.
     const preservesSubtree = !!matchLabel && !!selfMatch && preserveMatchedSubtreeTypes.has(node.type);
+    // A type-matched table keeps its loaded detail groups after the text query
+    // is cleared instead of being rebuilt with an empty filtered child list.
+    const preservesTypeMatchedTable = !matchLabel && !!selfMatch && node.type === "table";
     const filteredChildren = preservesSubtree ? node.children : node.children ? filterSidebarTreeWithMatcher(node.children, matchLabel, collapsedIds, searchableNodeTypes) : undefined;
 
     if (selfMatch || (filteredChildren && filteredChildren.length > 0)) {
-      if (!node.children) {
+      if (!node.children || preservesTypeMatchedTable) {
         filteredNodes.push({ node, score: selfMatch?.score ?? 0 });
       } else {
         const children = filteredChildren ?? [];

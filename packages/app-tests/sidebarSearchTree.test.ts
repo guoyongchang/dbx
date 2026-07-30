@@ -350,6 +350,35 @@ test("filters the sidebar by node type without a text query", () => {
   );
 });
 
+test("preserves an expanded type-filtered table after the text query is cleared", () => {
+  const table: TreeNode = {
+    id: "conn:db:orders",
+    label: "orders",
+    type: "table",
+    connectionId: "conn",
+    database: "inventory",
+    isExpanded: true,
+    children: [
+      {
+        id: "conn:db:orders:__columns",
+        label: "tree.columns",
+        type: "group-columns",
+        connectionId: "conn",
+        database: "inventory",
+        tableName: "orders",
+        isExpanded: false,
+        children: [],
+      },
+    ],
+  };
+
+  const [filteredTable] = filterSidebarTree([table], "", new Set(), new Set(["table"]));
+
+  assert.equal(filteredTable, table);
+  assert.equal(filteredTable?.isExpanded, true);
+  assert.equal(filteredTable?.children?.[0]?.type, "group-columns");
+});
+
 test("combines text search with the selected node types", () => {
   const filtered = filterSidebarTree(scopedSearchNodes(), "order", new Set(), new Set(["schema"]));
 
