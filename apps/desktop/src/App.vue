@@ -1126,9 +1126,15 @@ function pasteClipboardAsSqlInCondition() {
   void contentAreaRef.value?.pasteClipboardAsSqlInCondition?.();
 }
 
+// Cold-start file arguments can arrive while persisted tabs are still being
+// restored. Keep external SQL tabs behind the same desktop initialization so
+// initOpenTabs cannot replace a tab that was just opened from the OS.
+let desktopInitializationPromise: Promise<void> | null = null;
+
 async function openSqlFilePath(path: string) {
   if (!isTauriRuntime()) return;
   try {
+    await desktopInitializationPromise;
     const content = await api.readExternalSqlFile(path);
     const connectionId = connectionStore.activeConnectionId || activeTab.value?.connectionId || connectionStore.connections[0]?.id || "";
     const connection = connectionId ? connectionStore.getConfig(connectionId) : undefined;
@@ -2129,7 +2135,7 @@ onMounted(async () => {
       .catch(() => {});
     return;
   }
-  void initApp();
+  desktopInitializationPromise = initApp();
   setupFileDrop().catch(() => {});
   setTimeout(() => {
     runUpdateNotificationChecks();
