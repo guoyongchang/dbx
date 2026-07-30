@@ -28,6 +28,11 @@ export function filterSidebarTree(nodes: TreeNode[], query: string, collapsedIds
   return filterSidebarTreeWithMatcher(nodes, matchLabel, collapsedIds, searchableNodeTypes);
 }
 
+export function reuseLiveSidebarTreeNodes(indexedNodes: TreeNode[], liveNodes: readonly TreeNode[]): TreeNode[] {
+  const liveNodesById = new Map(liveNodes.map((node) => [node.id, node]));
+  return indexedNodes.map((node) => liveNodesById.get(node.id) ?? node);
+}
+
 function filterSidebarTreeWithMatcher(nodes: TreeNode[], matchLabel: SidebarLabelMatcher | undefined, collapsedIds: ReadonlySet<string>, searchableNodeTypes?: ReadonlySet<TreeNodeType>): TreeNode[] {
   const filteredNodes: { node: TreeNode; score: number }[] = [];
 
