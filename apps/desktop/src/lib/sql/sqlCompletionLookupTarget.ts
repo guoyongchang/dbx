@@ -16,6 +16,14 @@ function findExactName(names: readonly string[] | undefined, value: string): str
   return names?.find((name) => name.toLowerCase() === value.toLowerCase());
 }
 
+function findCaseSensitiveName(names: readonly string[] | undefined, value: string): string | undefined {
+  return names?.find((name) => name === value);
+}
+
+export function mergeSqlCompletionQualifierNames(primary: readonly string[], secondary: readonly string[]): string[] {
+  return [...new Set([...primary, ...secondary])];
+}
+
 export function resolveSqlCompletionSchemaLookupDatabase(options: {
   supportsDatabaseSchemaQualifier?: boolean;
   completionContext: Pick<SqlCompletionContext, "qualifier" | "qualifierParts" | "suggestTables" | "insertTable">;
@@ -27,8 +35,8 @@ export function resolveSqlCompletionSchemaLookupDatabase(options: {
   const qualifier = completionContext.qualifier?.trim();
   const qualifierParts = completionContext.qualifierParts?.filter(Boolean) ?? qualifier?.split(".").filter(Boolean) ?? [];
   if (qualifierParts.length !== 1) return undefined;
-  if (findExactName(options.knownSchemas, qualifierParts[0]!)) return undefined;
-  return findExactName(options.knownDatabases, qualifierParts[0]!);
+  if (findCaseSensitiveName(options.knownSchemas, qualifierParts[0]!)) return undefined;
+  return findCaseSensitiveName(options.knownDatabases, qualifierParts[0]!);
 }
 
 export function resolveSqlCompletionTableLookupTarget(options: {

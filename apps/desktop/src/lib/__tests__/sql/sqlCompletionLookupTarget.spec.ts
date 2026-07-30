@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getSqlCompletionContext } from "@/lib/sql/sqlCompletion";
-import { resolveSqlCompletionRoutineLookupTarget, resolveSqlCompletionSchemaLookupDatabase, resolveSqlCompletionTableLookupTarget } from "@/lib/sql/sqlCompletionLookupTarget";
+import { mergeSqlCompletionQualifierNames, resolveSqlCompletionRoutineLookupTarget, resolveSqlCompletionSchemaLookupDatabase, resolveSqlCompletionTableLookupTarget } from "@/lib/sql/sqlCompletionLookupTarget";
 
 describe("sqlCompletionLookupTarget", () => {
   it("treats qualified table completion as a database lookup for MySQL-compatible engines", () => {
@@ -100,7 +100,7 @@ describe("sqlCompletionLookupTarget", () => {
   });
 
   it("routes a SQL Server database qualifier to schema completion", () => {
-    const completionContext = getSqlCompletionContext("select * from reporting.d", "select * from reporting.d".length);
+    const completionContext = getSqlCompletionContext("select * from Reporting.d", "select * from Reporting.d".length);
 
     expect(
       resolveSqlCompletionSchemaLookupDatabase({
@@ -109,6 +109,31 @@ describe("sqlCompletionLookupTarget", () => {
         completionContext,
       }),
     ).toBe("Reporting");
+  });
+
+  it("does not case-fold database qualifiers while choosing a schema scope", () => {
+    const completionContext = getSqlCompletionContext("select * from reporting.d", "select * from reporting.d".length);
+
+    expect(
+      resolveSqlCompletionSchemaLookupDatabase({
+        supportsDatabaseSchemaQualifier: true,
+        knownDatabases: ["Reporting"],
+        completionContext,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("does not let a case-distinct schema hide an exact database qualifier", () => {
+    const completionContext = getSqlCompletionContext("select * from reporting.d", "select * from reporting.d".length);
+
+    expect(
+      resolveSqlCompletionSchemaLookupDatabase({
+        supportsDatabaseSchemaQualifier: true,
+        knownDatabases: ["reporting"],
+        knownSchemas: ["Reporting"],
+        completionContext,
+      }),
+    ).toBe("reporting");
   });
 
   it("does not mistake a current-database schema for a database", () => {
@@ -134,6 +159,10 @@ describe("sqlCompletionLookupTarget", () => {
         completionContext,
       }),
     ).toBeUndefined();
+  });
+
+  it("keeps case-distinct database and schema completion names", () => {
+    expect(mergeSqlCompletionQualifierNames(["Reporting", "dbo"], ["reporting", "dbo"])).toEqual(["Reporting", "dbo", "reporting"]);
   });
 
   it("uses the current schema for unqualified table completion", () => {
