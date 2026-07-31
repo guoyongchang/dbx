@@ -1,4 +1,6 @@
 import type { SqlCompletionContext } from "@/lib/sql/sqlCompletion";
+import { executableStatementRanges } from "@/lib/sql/sqlStatementRanges";
+import type { DatabaseType } from "@/types/database";
 
 export interface SqlCompletionTableLookupTarget {
   database: string;
@@ -10,6 +12,86 @@ export interface SqlCompletionTableLookupTarget {
 export interface SqlCompletionRoutineLookupTarget {
   schema?: string;
   mask: string;
+}
+
+export interface SqlCompletionScope {
+  database: string;
+  schema?: string;
+  completionContext: SqlCompletionContext;
+}
+
+function sqlStatementWithoutLeadingComments(statement: string): string {
+  let remaining = statement.trimStart();
+  while (remaining) {
+    if (remaining.startsWith("--")) {
+      const newline = remaining.indexOf("\n");
+      remaining = newline < 0 ? "" : remaining.slice(newline + 1).trimStart();
+      continue;
+    }
+    if (remaining.startsWith("/*")) {
+      const end = remaining.indexOf("*/", 2);
+      if (end < 0) return "";
+      remaining = remaining.slice(end + 2).trimStart();
+      continue;
+    }
+    break;
+  }
+  return remaining;
+}
+
+function sqlServerUseDatabase(statement: string): string | undefined {
+  const match = /^USE\s+(?:\[((?:[^\]]|\]\])*)\]|"((?:[^"]|"")*)"|([\p{L}_@#][\p{L}\p{N}_@$#]*))\s*;?\s*$/iu.exec(sqlStatementWithoutLeadingComments(statement));
+  if (!match) return undefined;
+  if (match[1] !== undefined) return match[1].replaceAll("]]", "]");
+  if (match[2] !== undefined) return match[2].replaceAll('""', '"');
+  return match[3];
+}
+
+function sqlServerUseDatabaseBeforeCursor(sql: string, cursor: number): string | undefined {
+  const position = Math.max(0, Math.min(cursor, sql.length));
+  let database: string | undefined;
+  for (const statement of executableStatementRanges(sql, "sqlserver")) {
+    if (statement.from >= position || statement.to >= position) break;
+    database = sqlServerUseDatabase(statement.sql) ?? database;
+  }
+  return database;
+}
+
+export function resolveSqlCompletionScope(options: { sql: string; cursor: number; databaseType?: DatabaseType; currentDatabase: string; currentSchema?: string; completionContext: SqlCompletionContext }): SqlCompletionScope {
+  if (options.databaseType !== "sqlserver") {
+    return {
+      database: options.currentDatabase,
+      schema: options.currentSchema,
+      completionContext: options.completionContext,
+    };
+  }
+  const database = sqlServerUseDatabaseBeforeCursor(options.sql, options.cursor);
+  if (!database) {
+    return {
+      database: options.currentDatabase,
+      schema: options.currentSchema,
+      completionContext: options.completionContext,
+    };
+  }
+  const schema = "dbo";
+  return {
+    database,
+    schema,
+    completionContext: {
+      ...options.completionContext,
+      insertDatabase: options.completionContext.insertTable && !options.completionContext.insertDatabase ? database : options.completionContext.insertDatabase,
+      insertSchema: options.completionContext.insertTable && !options.completionContext.insertSchema ? schema : options.completionContext.insertSchema,
+      referencedTables: options.completionContext.referencedTables.map((table) =>
+        table.database
+          ? table
+          : {
+              ...table,
+              database,
+              schema: table.schema ?? schema,
+            },
+      ),
+    },
+  };
 }
 
 function findExactName(names: readonly string[] | undefined, value: string): string | undefined {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getSqlCompletionContext } from "@/lib/sql/sqlCompletion";
-import { mergeSqlCompletionQualifierNames, resolveSqlCompletionRoutineLookupTarget, resolveSqlCompletionSchemaLookupDatabase, resolveSqlCompletionTableLookupTarget } from "@/lib/sql/sqlCompletionLookupTarget";
+import { mergeSqlCompletionQualifierNames, resolveSqlCompletionRoutineLookupTarget, resolveSqlCompletionSchemaLookupDatabase, resolveSqlCompletionScope, resolveSqlCompletionTableLookupTarget } from "@/lib/sql/sqlCompletionLookupTarget";
 
 describe("sqlCompletionLookupTarget", () => {
   it("treats qualified table completion as a database lookup for MySQL-compatible engines", () => {
@@ -180,6 +180,113 @@ describe("sqlCompletionLookupTarget", () => {
       database: "app",
       schema: "public",
       filter: "ord",
+    });
+  });
+
+  it("uses the preceding SQL Server USE database and dbo for unqualified table completion", () => {
+    const sql = "USE [BarDB]\n\nSELECT * FROM T";
+    const completionContext = getSqlCompletionContext(sql, sql.length, { databaseType: "sqlserver", dialect: "sqlserver" });
+    const scope = resolveSqlCompletionScope({
+      sql,
+      cursor: sql.length,
+      databaseType: "sqlserver",
+      currentDatabase: "FooDB",
+      currentSchema: "sales",
+      completionContext,
+    });
+
+    expect(scope.database).toBe("BarDB");
+    expect(scope.schema).toBe("dbo");
+    expect(
+      resolveSqlCompletionTableLookupTarget({
+        currentDatabase: scope.database,
+        currentSchema: scope.schema,
+        supportsDatabaseQualifier: false,
+        supportsDatabaseSchemaQualifier: true,
+        completionContext: scope.completionContext,
+      }),
+    ).toEqual({
+      database: "BarDB",
+      schema: "dbo",
+      filter: "T",
+    });
+  });
+
+  it("uses the last preceding SQL Server USE and unescapes its identifier", () => {
+    const sql = "USE FooDB;\nUSE [Bar]]DB];\nSELECT * FROM T";
+    const completionContext = getSqlCompletionContext(sql, sql.length, { databaseType: "sqlserver", dialect: "sqlserver" });
+    const scope = resolveSqlCompletionScope({
+      sql,
+      cursor: sql.length,
+      databaseType: "sqlserver",
+      currentDatabase: "SelectedDB",
+      completionContext,
+    });
+
+    expect(scope.database).toBe("Bar]DB");
+  });
+
+  it("ignores commented, quoted, current, later, and non-SQL Server USE text", () => {
+    const sql = "-- USE [CommentDB]\nSELECT 'USE [StringDB]';\nSELECT * FROM T;\nUSE [LaterDB];";
+    const cursor = sql.indexOf("T;") + 1;
+    const completionContext = getSqlCompletionContext(sql, cursor, { databaseType: "sqlserver", dialect: "sqlserver" });
+
+    expect(
+      resolveSqlCompletionScope({
+        sql,
+        cursor,
+        databaseType: "sqlserver",
+        currentDatabase: "FooDB",
+        currentSchema: "dbo",
+        completionContext,
+      }).database,
+    ).toBe("FooDB");
+    const currentUseSql = "USE [BarDB]";
+    expect(
+      resolveSqlCompletionScope({
+        sql: currentUseSql,
+        cursor: currentUseSql.length,
+        databaseType: "sqlserver",
+        currentDatabase: "FooDB",
+        currentSchema: "dbo",
+        completionContext,
+      }).database,
+    ).toBe("FooDB");
+    expect(
+      resolveSqlCompletionScope({
+        sql: "USE [BarDB];\nSELECT * FROM T",
+        cursor: "USE [BarDB];\nSELECT * FROM T".length,
+        databaseType: "postgres",
+        currentDatabase: "FooDB",
+        currentSchema: "public",
+        completionContext,
+      }),
+    ).toMatchObject({ database: "FooDB", schema: "public", completionContext });
+  });
+
+  it("scopes unqualified SQL Server references without overriding explicit databases or schemas", () => {
+    const sql = "USE [BarDB];\nSELECT * FROM T";
+    const completionContext = {
+      ...getSqlCompletionContext(sql, sql.length, { databaseType: "sqlserver", dialect: "sqlserver" }),
+      insertTable: "NewRow",
+      referencedTables: [{ name: "TUser" }, { name: "TOrder", schema: "sales" }, { name: "TArchive", database: "ArchiveDB", schema: "history" }],
+    };
+    const scope = resolveSqlCompletionScope({
+      sql,
+      cursor: sql.length,
+      databaseType: "sqlserver",
+      currentDatabase: "FooDB",
+      completionContext,
+    });
+
+    expect(scope.completionContext).toMatchObject({
+      insertDatabase: "BarDB",
+      insertSchema: "dbo",
+      referencedTables: [
+        { name: "TUser", database: "BarDB", schema: "dbo" },
+        { name: "TOrder", database: "BarDB", schema: "sales" },
+        { name: "TArchive", database: "ArchiveDB", schema: "history" },
+      ],
     });
   });
 
