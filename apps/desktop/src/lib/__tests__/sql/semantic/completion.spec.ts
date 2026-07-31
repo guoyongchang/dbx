@@ -134,6 +134,24 @@ describe("semantic SQL completion candidates", () => {
     expect(context.qualifierParts).toEqual(["DatabaseB", "OUT", "orders"]);
     expect(items.filter((item) => item.type === "column").map((item) => item.label)).toEqual(["target_marker"]);
   });
+
+  it("completes SQL Server tables from the database dbo schema after a double dot", () => {
+    const { context, items } = semanticCompletion(
+      "SELECT * FROM BarDB..|",
+      {
+        tables: [{ name: "orders", database: "BarDB", schema: "dbo", type: "table" }],
+      },
+      { databaseType: "sqlserver", dialect: "sqlserver" },
+    );
+
+    expect(context).toMatchObject({
+      prefix: "",
+      qualifier: "BarDB.dbo",
+      qualifierParts: ["BarDB", "dbo"],
+    });
+    expect(items.filter((item) => item.type === "table")).toEqual([expect.objectContaining({ label: "orders", apply: "orders" })]);
+  });
+
   it.each([
     ["MySQL ORDER BY", "SELECT * FROM t LIMIT 100 or|", "mysql", "mysql", "ORDER BY"],
     ["PostgreSQL ON CONFLICT", "INSERT INTO t VALUES (1) on|", "postgres", "postgres", "ON CONFLICT"],

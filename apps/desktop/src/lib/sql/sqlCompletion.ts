@@ -1730,7 +1730,7 @@ export function getSqlCompletionContext(sql: string, cursor: number, options: Sq
   // Content before cursor within the current statement
   const beforeCursor = sql.slice(statementSpan.start, cursor);
 
-  const trailingIdentifier = parseTrailingIdentifierContext(beforeCursor);
+  const trailingIdentifier = parseTrailingIdentifierContext(beforeCursor, options.databaseType);
   const prefix = trailingIdentifier?.prefix ?? "";
   const qualifier = trailingIdentifier?.qualifier;
   const qualifierParts = trailingIdentifier?.qualifierParts;
@@ -1899,7 +1899,7 @@ function detectCompletionContextKind(options: {
   return "keyword";
 }
 
-function parseTrailingIdentifierContext(input: string): { start: number; prefix: string; qualifier?: string; qualifierParts?: string[] } | null {
+function parseTrailingIdentifierContext(input: string, databaseType?: DatabaseType): { start: number; prefix: string; qualifier?: string; qualifierParts?: string[] } | null {
   if (/\s$/.test(input)) return null;
   let i = input.length - 1;
   while (i >= 0 && /\s/.test(input[i] ?? "")) i--;
@@ -1915,7 +1915,13 @@ function parseTrailingIdentifierContext(input: string): { start: number; prefix:
 
   while (index > 0) {
     const parsed = parseTrailingIdentifierPart(tail, index);
-    if (!parsed) break;
+    if (!parsed) {
+      const omittedSqlServerSchema = databaseType === "sqlserver" && tail[index - 1] === "." && parseTrailingIdentifierPart(tail, index - 1);
+      if (!omittedSqlServerSchema) break;
+      parts.unshift("dbo");
+      index -= 1;
+      continue;
+    }
     parts.unshift(unquoteIdentifier(parsed.raw));
     index = parsed.start;
     if (index <= 0 || tail[index - 1] !== ".") break;
