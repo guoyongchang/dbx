@@ -134,7 +134,23 @@ export function buildSqlServerUseDatabaseCompletionItems(databaseNames: readonly
   });
 }
 
-export function resolveSqlCompletionScope(options: { sql: string; cursor: number; databaseType?: DatabaseType; currentDatabase: string; currentSchema?: string; knownDatabases?: readonly string[]; completionContext: SqlCompletionContext }): SqlCompletionScope {
+export function sqlServerUseCompletionDatabaseNames(options: { databaseNames: readonly string[]; currentDatabase: string; supportsSessionDatabaseSwitch: boolean }): string[] {
+  if (options.supportsSessionDatabaseSwitch) return [...options.databaseNames];
+  const currentDatabase = options.currentDatabase.trim();
+  return currentDatabase ? [findExactName(options.databaseNames, currentDatabase) ?? currentDatabase] : [];
+}
+
+export function resolveSqlCompletionScope(options: {
+  sql: string;
+  cursor: number;
+  databaseType?: DatabaseType;
+  currentDatabase: string;
+  currentSchema?: string;
+  knownDatabases?: readonly string[];
+  supportsSessionDatabaseSwitch?: boolean;
+  useDatabaseDefaultSchema?: string;
+  completionContext: SqlCompletionContext;
+}): SqlCompletionScope {
   if (options.databaseType !== "sqlserver") {
     return {
       database: options.currentDatabase,
@@ -143,15 +159,16 @@ export function resolveSqlCompletionScope(options: { sql: string; cursor: number
     };
   }
   const parsedDatabase = sqlServerUseDatabaseBeforeCursor(options.sql, options.cursor);
-  const database = parsedDatabase && options.knownDatabases !== undefined ? findExactName(options.knownDatabases, parsedDatabase) : parsedDatabase;
-  if (!database) {
+  const database = parsedDatabase ? findExactName(options.knownDatabases, parsedDatabase) : undefined;
+  const targetsCurrentDatabase = database?.toLowerCase() === options.currentDatabase.toLowerCase();
+  const schema = options.useDatabaseDefaultSchema?.trim();
+  if (!database || !schema || (!targetsCurrentDatabase && options.supportsSessionDatabaseSwitch !== true)) {
     return {
       database: options.currentDatabase,
       schema: options.currentSchema,
       completionContext: options.completionContext,
     };
   }
-  const schema = "dbo";
   return {
     database,
     schema,

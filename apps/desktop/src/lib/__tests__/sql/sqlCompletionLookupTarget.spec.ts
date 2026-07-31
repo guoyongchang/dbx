@@ -8,6 +8,7 @@ import {
   resolveSqlCompletionScope,
   resolveSqlCompletionTableLookupTarget,
   resolveSqlServerUseDatabaseCompletion,
+  sqlServerUseCompletionDatabaseNames,
 } from "@/lib/sql/sqlCompletionLookupTarget";
 
 describe("sqlCompletionLookupTarget", () => {
@@ -191,7 +192,7 @@ describe("sqlCompletionLookupTarget", () => {
     });
   });
 
-  it("uses the preceding SQL Server USE database and dbo for unqualified table completion", () => {
+  it("uses the preceding SQL Server USE database and its server-reported default schema", () => {
     const sql = "USE [bardb]\n\nSELECT * FROM T";
     const completionContext = getSqlCompletionContext(sql, sql.length, { databaseType: "sqlserver", dialect: "sqlserver" });
     const scope = resolveSqlCompletionScope({
@@ -201,11 +202,13 @@ describe("sqlCompletionLookupTarget", () => {
       currentDatabase: "FooDB",
       currentSchema: "sales",
       knownDatabases: ["FooDB", "BarDB"],
+      supportsSessionDatabaseSwitch: true,
+      useDatabaseDefaultSchema: "app_user",
       completionContext,
     });
 
     expect(scope.database).toBe("BarDB");
-    expect(scope.schema).toBe("dbo");
+    expect(scope.schema).toBe("app_user");
     expect(
       resolveSqlCompletionTableLookupTarget({
         currentDatabase: scope.database,
@@ -216,7 +219,7 @@ describe("sqlCompletionLookupTarget", () => {
       }),
     ).toEqual({
       database: "BarDB",
-      schema: "dbo",
+      schema: "app_user",
       filter: "T",
     });
   });
@@ -230,6 +233,8 @@ describe("sqlCompletionLookupTarget", () => {
       databaseType: "sqlserver",
       currentDatabase: "SelectedDB",
       knownDatabases: ["SelectedDB", "FooDB", "Bar]DB"],
+      supportsSessionDatabaseSwitch: true,
+      useDatabaseDefaultSchema: "reporting_user",
       completionContext,
     });
 
@@ -287,14 +292,16 @@ describe("sqlCompletionLookupTarget", () => {
       databaseType: "sqlserver",
       currentDatabase: "FooDB",
       knownDatabases: ["FooDB", "BarDB", "ArchiveDB"],
+      supportsSessionDatabaseSwitch: true,
+      useDatabaseDefaultSchema: "app_user",
       completionContext,
     });
 
     expect(scope.completionContext).toMatchObject({
       insertDatabase: "BarDB",
-      insertSchema: "dbo",
+      insertSchema: "app_user",
       referencedTables: [
-        { name: "TUser", database: "BarDB", schema: "dbo" },
+        { name: "TUser", database: "BarDB", schema: "app_user" },
         { name: "TOrder", database: "BarDB", schema: "sales" },
         { name: "TArchive", database: "ArchiveDB", schema: "history" },
       ],
@@ -311,11 +318,36 @@ describe("sqlCompletionLookupTarget", () => {
       currentDatabase: "FooDB",
       currentSchema: "sales",
       knownDatabases: ["FooDB", "BarDB"],
+      supportsSessionDatabaseSwitch: true,
+      useDatabaseDefaultSchema: "dbo",
       completionContext,
     });
 
     expect(scope).toEqual({
       database: "FooDB",
+      schema: "sales",
+      completionContext,
+    });
+  });
+
+  it("falls back to the selected database when the endpoint cannot switch sessions", () => {
+    const sql = "USE [BarDB];\nSELECT * FROM T";
+    const completionContext = getSqlCompletionContext(sql, sql.length, { databaseType: "sqlserver", dialect: "sqlserver" });
+
+    expect(
+      resolveSqlCompletionScope({
+        sql,
+        cursor: sql.length,
+        databaseType: "sqlserver",
+        currentDatabase: "AzureDB",
+        currentSchema: "sales",
+        knownDatabases: ["AzureDB", "BarDB"],
+        supportsSessionDatabaseSwitch: false,
+        useDatabaseDefaultSchema: "dbo",
+        completionContext,
+      }),
+    ).toEqual({
+      database: "AzureDB",
       schema: "sales",
       completionContext,
     });
@@ -346,6 +378,30 @@ describe("sqlCompletionLookupTarget", () => {
     expect(buildSqlServerUseDatabaseCompletionItems(["Odd]DB"], unquoted)[0]).toMatchObject({ label: "Odd]DB", detail: "database", apply: "[Odd]]DB]" });
     expect(buildSqlServerUseDatabaseCompletionItems(["Odd]DB"], bracketed)[0]).toMatchObject({ label: "Odd]DB", filterText: "Odd]]DB", apply: "Odd]]DB]" });
     expect(buildSqlServerUseDatabaseCompletionItems(['Odd"DB'], doubleQuoted)[0]).toMatchObject({ label: 'Odd"DB', filterText: 'Odd""DB', apply: 'Odd""DB"' });
+  });
+
+  it("limits USE database candidates to the current database when session switching is unsupported", () => {
+    expect(
+      sqlServerUseCompletionDatabaseNames({
+        databaseNames: ["master", "AzureDB", "OtherDB"],
+        currentDatabase: "azuredb",
+        supportsSessionDatabaseSwitch: false,
+      }),
+    ).toEqual(["AzureDB"]);
+    expect(
+      sqlServerUseCompletionDatabaseNames({
+        databaseNames: ["FooDB", "BarDB"],
+        currentDatabase: "FooDB",
+        supportsSessionDatabaseSwitch: true,
+      }),
+    ).toEqual(["FooDB", "BarDB"]);
+    expect(
+      sqlServerUseCompletionDatabaseNames({
+        databaseNames: [],
+        currentDatabase: "",
+        supportsSessionDatabaseSwitch: false,
+      }),
+    ).toEqual([]);
   });
 
   it.each([

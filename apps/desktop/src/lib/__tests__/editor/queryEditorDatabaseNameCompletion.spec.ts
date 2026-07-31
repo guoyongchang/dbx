@@ -34,4 +34,22 @@ describe("QueryEditor database name completion wiring", () => {
     expect(guard).toContain("supportsDatabaseNameCompletion(props.databaseType)");
     expect(guard).toContain("supportsDatabaseSchemaQualifierCompletion()");
   });
+
+  it("uses the resolved database scope for routine completion and isolates the editor cache", () => {
+    expect(extractFunction("lookupLocalCompletionObjectsForContext")).toContain("scope.database");
+    expect(extractFunction("lookupLocalCompletionObjectsForContext")).toContain("currentSchema: scope.schema");
+    expect(extractFunction("listCompletionObjectsForContext")).toContain("scope.database");
+    expect(extractFunction("listCompletionObjectsForContext")).toContain("currentSchema: scope.schema");
+    expect(extractFunction("completionObjectScopeKey")).toContain("scope.database");
+    expect(extractFunction("completionObjectScopeKey")).toContain("scope.schema");
+    expect(queryEditorSource).toContain("cachedCompletionObjectsByScope");
+  });
+
+  it("loads SQL Server capability metadata before offering or applying USE completion", () => {
+    const provider = extractFunction("provideSqlCompletions");
+
+    expect(provider).toContain("getSqlServerCompletionContext");
+    expect(provider).toContain("supports_session_database_switch");
+    expect(provider).toContain("useDatabaseDefaultSchema");
+  });
 });

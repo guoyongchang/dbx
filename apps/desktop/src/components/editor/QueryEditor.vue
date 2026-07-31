@@ -52,6 +52,7 @@ import {
   resolveSqlCompletionScope,
   resolveSqlCompletionTableLookupTarget,
   resolveSqlServerUseDatabaseCompletion,
+  sqlServerUseCompletionDatabaseNames,
   sqlServerUseDatabaseBeforeCursor,
   type SqlCompletionScope,
 } from "@/lib/sql/sqlCompletionLookupTarget";
@@ -109,7 +110,7 @@ import { sqlReferenceAnalysisDialectFor } from "@/lib/sql/semantic/dialect";
 import { buildRedisSyntaxDiagnostics, shouldRunRedisDiagnostics } from "@/lib/redis/redisSyntaxDiagnostics";
 import { buildRedisCompletionItemsFromContext, getRedisCompletionContext, getRedisCompletionResultValidFor, shouldAutoOpenRedisCompletion, takesKeyArgument, type RedisCompletionItem } from "@/lib/redis/redisCompletion";
 import type { SqlCompletionColumn, SqlCompletionForeignKey, SqlCompletionItem, SqlCompletionObject, SqlCompletionReferencedTable, SqlCompletionTable } from "@/lib/sql/sqlCompletion";
-import type { CompletionAssistantObjectKind, ColumnInfo, DatabaseType, IndexInfo, SqlReferenceAnalysis, SqlTableReference, SqlTextSpan } from "@/types/database";
+import type { CompletionAssistantObjectKind, ColumnInfo, DatabaseType, IndexInfo, SqlReferenceAnalysis, SqlServerCompletionContext, SqlTableReference, SqlTextSpan } from "@/types/database";
 
 const props = defineProps<{
   modelValue: string;
@@ -429,7 +430,7 @@ function editorThemeAppearance() {
 
 // Completion cache
 let cachedTables: SqlCompletionTable[] = [];
-let cachedCompletionObjects: SqlCompletionObject[] = [];
+const cachedCompletionObjectsByScope = new Map<string, SqlCompletionObject[]>();
 // Persistent column cache keyed by "schema.table" or "table"
 const cachedColumnsByTable = new Map<string, SqlCompletionColumn[]>();
 const cachedInsertValueHintColumnsByTable = new Map<string, string[]>();
@@ -2724,13 +2725,29 @@ async function provideSqlCompletions(context: CompletionContext) {
     if (!explicit && !useDatabaseCompletion && !shouldAutoOpenSqlCompletion(fullDoc, position, sqlCompletionDialectOptions())) return null;
 
     if (useDatabaseCompletion) {
+      const currentDatabase = props.database ?? "";
+      if (!currentDatabase) return null;
+      let sqlServerContext: SqlServerCompletionContext;
       try {
-        await connectionStore.listCompletionDatabases(props.connectionId);
+        sqlServerContext = await connectionStore.getSqlServerCompletionContext(props.connectionId, currentDatabase);
       } catch {
-        // Keep locally indexed database names available when metadata refresh fails.
+        // Without a server-reported capability, do not suggest a USE target
+        // that the current SQL Server session may be unable to switch to.
+        return null;
+      }
+      if (sqlServerContext.supports_session_database_switch) {
+        try {
+          await connectionStore.listCompletionDatabases(props.connectionId);
+        } catch {
+          // Keep locally indexed database names available when metadata refresh fails.
+        }
       }
       if (epoch !== completionEpoch) return null;
-      const databaseNames = connectionStore.lookupLocalCompletionDatabases(props.connectionId, useDatabaseCompletion.prefix, MAX_COMPLETION_TABLES);
+      const databaseNames = sqlServerUseCompletionDatabaseNames({
+        databaseNames: connectionStore.lookupLocalCompletionDatabases(props.connectionId, useDatabaseCompletion.prefix, MAX_COMPLETION_TABLES),
+        currentDatabase,
+        supportsSessionDatabaseSwitch: sqlServerContext.supports_session_database_switch,
+      });
       const items = buildSqlServerUseDatabaseCompletionItems(databaseNames, useDatabaseCompletion);
       return buildCompletionResult(items, useDatabaseCompletion.from);
     }
@@ -2758,16 +2775,28 @@ async function provideSqlCompletions(context: CompletionContext) {
 
     const useDatabase = props.databaseType === "sqlserver" ? sqlServerUseDatabaseBeforeCursor(fullDoc, position) : undefined;
     let knownUseDatabases: string[] | undefined;
+    let supportsSessionDatabaseSwitch: boolean | undefined;
+    let useDatabaseDefaultSchema: string | undefined;
     if (useDatabase) {
-      knownUseDatabases = mergeSqlCompletionQualifierNames([props.database!], connectionStore.lookupLocalCompletionDatabases(props.connectionId, "", MAX_COMPLETION_TABLES));
-      if (!knownUseDatabases.some((database) => database.toLowerCase() === useDatabase.toLowerCase())) {
-        try {
-          knownUseDatabases = mergeSqlCompletionQualifierNames([props.database!], await connectionStore.listCompletionDatabases(props.connectionId));
-        } catch {
-          // An unverified USE target must not replace the selected database.
+      try {
+        const currentContext = await connectionStore.getSqlServerCompletionContext(props.connectionId, props.database!);
+        supportsSessionDatabaseSwitch = currentContext.supports_session_database_switch;
+        knownUseDatabases = [props.database!];
+        if (supportsSessionDatabaseSwitch) {
+          knownUseDatabases = mergeSqlCompletionQualifierNames(knownUseDatabases, connectionStore.lookupLocalCompletionDatabases(props.connectionId, "", MAX_COMPLETION_TABLES));
+          if (!knownUseDatabases.some((database) => database.toLowerCase() === useDatabase.toLowerCase())) {
+            knownUseDatabases = mergeSqlCompletionQualifierNames(knownUseDatabases, await connectionStore.listCompletionDatabases(props.connectionId));
+          }
         }
-        if (epoch !== completionEpoch) return null;
+        const targetDatabase = knownUseDatabases.find((database) => database.toLowerCase() === useDatabase.toLowerCase());
+        if (targetDatabase) {
+          const targetContext = targetDatabase.toLowerCase() === props.database!.toLowerCase() ? currentContext : await connectionStore.getSqlServerCompletionContext(props.connectionId, targetDatabase);
+          useDatabaseDefaultSchema = targetContext.default_schema;
+        }
+      } catch {
+        // An unverified USE target must not replace the selected database.
       }
+      if (epoch !== completionEpoch) return null;
     }
 
     const completionScope = resolveSqlCompletionScope({
@@ -2777,6 +2806,8 @@ async function provideSqlCompletions(context: CompletionContext) {
       currentDatabase: props.database!,
       currentSchema: props.schema,
       knownDatabases: knownUseDatabases,
+      supportsSessionDatabaseSwitch,
+      useDatabaseDefaultSchema,
       completionContext,
     });
     completionContext = completionScope.completionContext;
@@ -2922,7 +2953,8 @@ function buildLocalSqlCompletionResult(completionContext: ReturnType<typeof getS
   const tables = schemaLookupDatabase ? [] : shouldLoadTables ? connectionStore.lookupLocalCompletionTables(props.connectionId, tableLookupTarget.database, tableLookupTarget.filter, MAX_COMPLETION_TABLES, globalOracleTableSearch ? undefined : tableLookupTarget.schema, props.catalog) : cachedTables;
 
   const shouldLoadObjects = shouldLoadCompletionObjects(completionContext);
-  const completionObjects = shouldLoadObjects ? lookupLocalCompletionObjectsForContext(completionContext) : cachedCompletionObjects;
+  const scopedCachedCompletionObjects = completionObjectsForScope(scope);
+  const completionObjects = shouldLoadObjects ? lookupLocalCompletionObjectsForContext(completionContext, scope) : scopedCachedCompletionObjects;
 
   const schemaNames =
     completionContext.suggestTables && !completionContext.insertTable
@@ -3049,11 +3081,12 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
       .catch(() => {});
   }
   if (!localOnlyMetadata && shouldLoadCompletionObjects(completionContext)) {
-    void listCompletionObjectsForContext(completionContext)
+    void listCompletionObjectsForContext(completionContext, scope)
       .then((objects) => {
-        const merged = mergeCompletionObjects(cachedCompletionObjects, objects);
-        const changed = completionObjectsDiffer(cachedCompletionObjects, merged);
-        cachedCompletionObjects = merged;
+        const cachedObjects = completionObjectsForScope(scope);
+        const merged = mergeCompletionObjects(cachedObjects, objects);
+        const changed = completionObjectsDiffer(cachedObjects, merged);
+        cachedCompletionObjectsByScope.set(completionObjectScopeKey(scope), merged);
         if (changed) refreshActiveSqlCompletion(fullDoc, position, completionContext);
       })
       .catch(() => {});
@@ -3172,24 +3205,24 @@ function oracleRoutineCompletionTargets(completionContext: ReturnType<typeof get
   return [{ schema: parts[parts.length - 2], parentName: parts[parts.length - 1] }];
 }
 
-function lookupLocalCompletionObjectsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>): SqlCompletionObject[] {
+function lookupLocalCompletionObjectsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope): SqlCompletionObject[] {
   if (!props.connectionId || props.database == null) return [];
   if (props.databaseType === "oracle") {
-    return connectionStore.lookupLocalCompletionObjects(props.connectionId, props.database, completionContext.prefix, MAX_COMPLETION_TABLES);
+    return connectionStore.lookupLocalCompletionObjects(props.connectionId, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES);
   }
-  const target = resolveSqlCompletionRoutineLookupTarget({ currentSchema: props.schema, completionContext });
-  return connectionStore.lookupLocalCompletionObjects(props.connectionId, props.database, target.mask, MAX_COMPLETION_TABLES, target.schema);
+  const target = resolveSqlCompletionRoutineLookupTarget({ currentSchema: scope.schema, completionContext });
+  return connectionStore.lookupLocalCompletionObjects(props.connectionId, scope.database, target.mask, MAX_COMPLETION_TABLES, target.schema);
 }
 
-async function listCompletionObjectsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>): Promise<SqlCompletionObject[]> {
+async function listCompletionObjectsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope): Promise<SqlCompletionObject[]> {
   if (!props.connectionId || props.database == null) return [];
   const objectKinds = completionObjectKindsForContext(completionContext);
   if (props.databaseType !== "oracle") {
-    const target = resolveSqlCompletionRoutineLookupTarget({ currentSchema: props.schema, completionContext });
-    return connectionStore.listCompletionObjects(props.connectionId, props.database, target.mask, MAX_COMPLETION_TABLES, target.schema, undefined, false, props.schema, objectKinds);
+    const target = resolveSqlCompletionRoutineLookupTarget({ currentSchema: scope.schema, completionContext });
+    return connectionStore.listCompletionObjects(props.connectionId, scope.database, target.mask, MAX_COMPLETION_TABLES, target.schema, undefined, false, scope.schema, objectKinds);
   }
   const groups = await Promise.all(
-    oracleRoutineCompletionTargets(completionContext).map((target) => connectionStore.listCompletionObjects(props.connectionId!, props.database!, completionContext.prefix, MAX_COMPLETION_TABLES, target.schema, target.parentName, target.globalSearch, props.schema, objectKinds)),
+    oracleRoutineCompletionTargets(completionContext).map((target) => connectionStore.listCompletionObjects(props.connectionId!, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES, target.schema, target.parentName, target.globalSearch, scope.schema, objectKinds)),
   );
   return groups.reduce((objects, group) => mergeCompletionObjects(objects, group), [] as SqlCompletionObject[]);
 }
@@ -3258,17 +3291,18 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
   if (epoch !== completionEpoch) return null;
 
   const shouldLoadObjects = shouldLoadCompletionObjects(completionContext);
-  let completionObjects = shouldLoadObjects ? (localOnlyMetadata ? lookupLocalCompletionObjectsForContext(completionContext) : await listCompletionObjectsForContext(completionContext)) : cachedCompletionObjects;
+  const scopedCachedCompletionObjects = completionObjectsForScope(scope);
+  let completionObjects = shouldLoadObjects ? (localOnlyMetadata ? lookupLocalCompletionObjectsForContext(completionContext, scope) : await listCompletionObjectsForContext(completionContext, scope)) : scopedCachedCompletionObjects;
   if (epoch !== completionEpoch) return null;
 
   if (!props.catalog && props.databaseType !== "oracle" && !localOnlyMetadata && completionContext.qualifier && completionObjects.length === 0) {
-    const schemaObjects = await connectionStore.listCompletionObjects(props.connectionId!, props.database!, completionContext.prefix, MAX_COMPLETION_TABLES, completionContext.qualifier);
+    const schemaObjects = await connectionStore.listCompletionObjects(props.connectionId!, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES, completionContext.qualifier, undefined, false, scope.schema);
     if (schemaObjects.length > 0) {
       completionObjects = schemaObjects;
     }
     if (epoch !== completionEpoch) return null;
   }
-  cachedCompletionObjects = mergeCompletionObjects(cachedCompletionObjects, completionObjects);
+  cachedCompletionObjectsByScope.set(completionObjectScopeKey(scope), mergeCompletionObjects(scopedCachedCompletionObjects, completionObjects));
 
   // Fetch schemas for schema completion
   let schemaNames: string[] = [];
@@ -3478,6 +3512,14 @@ function mergeCompletionObjects(existing: SqlCompletionObject[], incoming: SqlCo
   return merged;
 }
 
+function completionObjectScopeKey(scope: CompletionMetadataScope): string {
+  return `${scope.database}:${scope.schema ?? ""}`.toLowerCase();
+}
+
+function completionObjectsForScope(scope: CompletionMetadataScope): SqlCompletionObject[] {
+  return cachedCompletionObjectsByScope.get(completionObjectScopeKey(scope)) ?? [];
+}
+
 function completionObjectIdentityKey(object: SqlCompletionObject): string {
   return `${object.type}:${object.schema ?? ""}:${object.name}:${object.parentName ?? ""}:${object.signature?.trim() ?? ""}`.toLowerCase();
 }
@@ -3513,7 +3555,7 @@ function refreshActiveSqlCompletion(fullDoc: string, position: number, completio
 
 function refreshCompletionCache() {
   cachedTables = [];
-  cachedCompletionObjects = [];
+  cachedCompletionObjectsByScope.clear();
   cachedColumnsByTable.clear();
   cachedInsertValueHintColumnsByTable.clear();
   loadedColumnsByTable.clear();
@@ -4307,7 +4349,7 @@ onMounted(async () => {
   registerTableReferenceDropListener();
 
   cachedTables = [];
-  cachedCompletionObjects = [];
+  cachedCompletionObjectsByScope.clear();
   scheduleSemanticDiagnostics();
 
   if (props.autoFocus) {
