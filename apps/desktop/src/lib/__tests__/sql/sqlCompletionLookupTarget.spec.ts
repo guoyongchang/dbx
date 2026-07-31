@@ -410,16 +410,34 @@ describe("sqlCompletionLookupTarget", () => {
   ])("separates a routine schema from its name mask for %s", (sql, schema, mask) => {
     const completionContext = getSqlCompletionContext(sql, sql.length);
 
-    expect(resolveSqlCompletionRoutineLookupTarget({ currentSchema: "fallback", completionContext })).toEqual({ schema, mask });
+    expect(resolveSqlCompletionRoutineLookupTarget({ currentDatabase: "app", currentSchema: "fallback", completionContext })).toEqual({ database: "app", schema, mask });
   });
 
   it("uses the current schema for an unqualified routine mask", () => {
     const sql = "SELECT st_";
     const completionContext = getSqlCompletionContext(sql, sql.length);
 
-    expect(resolveSqlCompletionRoutineLookupTarget({ currentSchema: "public", completionContext })).toEqual({
+    expect(resolveSqlCompletionRoutineLookupTarget({ currentDatabase: "app", currentSchema: "public", completionContext })).toEqual({
+      database: "app",
       schema: "public",
       mask: "st_",
+    });
+  });
+
+  it.each(["SELECT BarDB.sales.fn_", "EXEC BarDB.sales.proc_"])("uses an explicit SQL Server database and schema for %s", (sql) => {
+    const completionContext = getSqlCompletionContext(sql, sql.length);
+
+    expect(
+      resolveSqlCompletionRoutineLookupTarget({
+        currentDatabase: "FooDB",
+        currentSchema: "app_user",
+        supportsDatabaseSchemaQualifier: true,
+        completionContext,
+      }),
+    ).toEqual({
+      database: "BarDB",
+      schema: "sales",
+      mask: sql.endsWith("fn_") ? "fn_" : "proc_",
     });
   });
 });

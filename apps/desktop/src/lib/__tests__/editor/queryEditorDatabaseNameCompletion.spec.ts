@@ -36,10 +36,11 @@ describe("QueryEditor database name completion wiring", () => {
   });
 
   it("uses the resolved database scope for routine completion and isolates the editor cache", () => {
-    expect(extractFunction("lookupLocalCompletionObjectsForContext")).toContain("scope.database");
-    expect(extractFunction("lookupLocalCompletionObjectsForContext")).toContain("currentSchema: scope.schema");
-    expect(extractFunction("listCompletionObjectsForContext")).toContain("scope.database");
-    expect(extractFunction("listCompletionObjectsForContext")).toContain("currentSchema: scope.schema");
+    expect(extractFunction("routineCompletionTargetForContext")).toContain("currentDatabase: scope.database");
+    expect(extractFunction("routineCompletionTargetForContext")).toContain("supportsDatabaseSchemaQualifier: supportsDatabaseSchemaQualifierCompletion()");
+    expect(extractFunction("lookupLocalCompletionObjectsForContext")).toContain("target.database");
+    expect(extractFunction("listCompletionObjectsForContext")).toContain("target.database");
+    expect(extractFunction("routineCompletionScopeForContext")).toContain("database: target.database");
     expect(extractFunction("completionObjectScopeKey")).toContain("scope.database");
     expect(extractFunction("completionObjectScopeKey")).toContain("scope.schema");
     expect(queryEditorSource).toContain("cachedCompletionObjectsByScope");

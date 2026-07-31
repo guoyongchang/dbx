@@ -2953,7 +2953,8 @@ function buildLocalSqlCompletionResult(completionContext: ReturnType<typeof getS
   const tables = schemaLookupDatabase ? [] : shouldLoadTables ? connectionStore.lookupLocalCompletionTables(props.connectionId, tableLookupTarget.database, tableLookupTarget.filter, MAX_COMPLETION_TABLES, globalOracleTableSearch ? undefined : tableLookupTarget.schema, props.catalog) : cachedTables;
 
   const shouldLoadObjects = shouldLoadCompletionObjects(completionContext);
-  const scopedCachedCompletionObjects = completionObjectsForScope(scope);
+  const completionObjectScope = routineCompletionScopeForContext(completionContext, scope);
+  const scopedCachedCompletionObjects = completionObjectsForScope(completionObjectScope);
   const completionObjects = shouldLoadObjects ? lookupLocalCompletionObjectsForContext(completionContext, scope) : scopedCachedCompletionObjects;
 
   const schemaNames =
@@ -3081,12 +3082,13 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
       .catch(() => {});
   }
   if (!localOnlyMetadata && shouldLoadCompletionObjects(completionContext)) {
+    const completionObjectScope = routineCompletionScopeForContext(completionContext, scope);
     void listCompletionObjectsForContext(completionContext, scope)
       .then((objects) => {
-        const cachedObjects = completionObjectsForScope(scope);
+        const cachedObjects = completionObjectsForScope(completionObjectScope);
         const merged = mergeCompletionObjects(cachedObjects, objects);
         const changed = completionObjectsDiffer(cachedObjects, merged);
-        cachedCompletionObjectsByScope.set(completionObjectScopeKey(scope), merged);
+        cachedCompletionObjectsByScope.set(completionObjectScopeKey(completionObjectScope), merged);
         if (changed) refreshActiveSqlCompletion(fullDoc, position, completionContext);
       })
       .catch(() => {});
@@ -3205,21 +3207,36 @@ function oracleRoutineCompletionTargets(completionContext: ReturnType<typeof get
   return [{ schema: parts[parts.length - 2], parentName: parts[parts.length - 1] }];
 }
 
+function routineCompletionTargetForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope) {
+  return resolveSqlCompletionRoutineLookupTarget({
+    currentDatabase: scope.database,
+    currentSchema: scope.schema,
+    supportsDatabaseSchemaQualifier: supportsDatabaseSchemaQualifierCompletion(),
+    completionContext,
+  });
+}
+
+function routineCompletionScopeForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope): CompletionMetadataScope {
+  if (props.databaseType === "oracle") return scope;
+  const target = routineCompletionTargetForContext(completionContext, scope);
+  return { database: target.database, schema: target.schema };
+}
+
 function lookupLocalCompletionObjectsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope): SqlCompletionObject[] {
   if (!props.connectionId || props.database == null) return [];
   if (props.databaseType === "oracle") {
     return connectionStore.lookupLocalCompletionObjects(props.connectionId, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES);
   }
-  const target = resolveSqlCompletionRoutineLookupTarget({ currentSchema: scope.schema, completionContext });
-  return connectionStore.lookupLocalCompletionObjects(props.connectionId, scope.database, target.mask, MAX_COMPLETION_TABLES, target.schema);
+  const target = routineCompletionTargetForContext(completionContext, scope);
+  return connectionStore.lookupLocalCompletionObjects(props.connectionId, target.database, target.mask, MAX_COMPLETION_TABLES, target.schema);
 }
 
 async function listCompletionObjectsForContext(completionContext: ReturnType<typeof getSqlCompletionContext>, scope: CompletionMetadataScope): Promise<SqlCompletionObject[]> {
   if (!props.connectionId || props.database == null) return [];
   const objectKinds = completionObjectKindsForContext(completionContext);
   if (props.databaseType !== "oracle") {
-    const target = resolveSqlCompletionRoutineLookupTarget({ currentSchema: scope.schema, completionContext });
-    return connectionStore.listCompletionObjects(props.connectionId, scope.database, target.mask, MAX_COMPLETION_TABLES, target.schema, undefined, false, scope.schema, objectKinds);
+    const target = routineCompletionTargetForContext(completionContext, scope);
+    return connectionStore.listCompletionObjects(props.connectionId, target.database, target.mask, MAX_COMPLETION_TABLES, target.schema, undefined, false, scope.schema, objectKinds);
   }
   const groups = await Promise.all(
     oracleRoutineCompletionTargets(completionContext).map((target) => connectionStore.listCompletionObjects(props.connectionId!, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES, target.schema, target.parentName, target.globalSearch, scope.schema, objectKinds)),
@@ -3291,18 +3308,20 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
   if (epoch !== completionEpoch) return null;
 
   const shouldLoadObjects = shouldLoadCompletionObjects(completionContext);
-  const scopedCachedCompletionObjects = completionObjectsForScope(scope);
+  const completionObjectScope = routineCompletionScopeForContext(completionContext, scope);
+  const scopedCachedCompletionObjects = completionObjectsForScope(completionObjectScope);
   let completionObjects = shouldLoadObjects ? (localOnlyMetadata ? lookupLocalCompletionObjectsForContext(completionContext, scope) : await listCompletionObjectsForContext(completionContext, scope)) : scopedCachedCompletionObjects;
   if (epoch !== completionEpoch) return null;
 
   if (!props.catalog && props.databaseType !== "oracle" && !localOnlyMetadata && completionContext.qualifier && completionObjects.length === 0) {
-    const schemaObjects = await connectionStore.listCompletionObjects(props.connectionId!, scope.database, completionContext.prefix, MAX_COMPLETION_TABLES, completionContext.qualifier, undefined, false, scope.schema);
+    const target = routineCompletionTargetForContext(completionContext, scope);
+    const schemaObjects = await connectionStore.listCompletionObjects(props.connectionId!, target.database, target.mask, MAX_COMPLETION_TABLES, target.schema, undefined, false, scope.schema);
     if (schemaObjects.length > 0) {
       completionObjects = schemaObjects;
     }
     if (epoch !== completionEpoch) return null;
   }
-  cachedCompletionObjectsByScope.set(completionObjectScopeKey(scope), mergeCompletionObjects(scopedCachedCompletionObjects, completionObjects));
+  cachedCompletionObjectsByScope.set(completionObjectScopeKey(completionObjectScope), mergeCompletionObjects(scopedCachedCompletionObjects, completionObjects));
 
   // Fetch schemas for schema completion
   let schemaNames: string[] = [];

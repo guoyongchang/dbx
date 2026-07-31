@@ -10,6 +10,7 @@ export interface SqlCompletionTableLookupTarget {
 }
 
 export interface SqlCompletionRoutineLookupTarget {
+  database: string;
   schema?: string;
   mask: string;
 }
@@ -259,13 +260,17 @@ export function resolveSqlCompletionTableLookupTarget(options: {
   };
 }
 
-export function resolveSqlCompletionRoutineLookupTarget(options: { currentSchema?: string; completionContext: Pick<SqlCompletionContext, "qualifier" | "qualifierParts" | "prefix"> }): SqlCompletionRoutineLookupTarget {
-  const qualifierParts = options.completionContext.qualifierParts?.filter(Boolean);
-  const schema = qualifierParts?.[qualifierParts.length - 1] ?? options.completionContext.qualifier?.trim() ?? options.currentSchema;
+export function resolveSqlCompletionRoutineLookupTarget(options: { currentDatabase: string; currentSchema?: string; supportsDatabaseSchemaQualifier?: boolean; completionContext: Pick<SqlCompletionContext, "qualifier" | "qualifierParts" | "prefix"> }): SqlCompletionRoutineLookupTarget {
+  const qualifier = options.completionContext.qualifier?.trim();
+  const qualifierParts = options.completionContext.qualifierParts?.filter(Boolean) ?? qualifier?.split(".").filter(Boolean) ?? [];
+  const hasDatabaseQualifier = options.supportsDatabaseSchemaQualifier && qualifierParts.length >= 2;
+  const database = hasDatabaseQualifier ? qualifierParts[qualifierParts.length - 2]! : options.currentDatabase;
+  const schema = qualifierParts[qualifierParts.length - 1] ?? qualifier ?? options.currentSchema;
 
   // A qualified routine uses the qualifier as metadata scope; only the final
   // identifier fragment is the function/procedure name mask.
   return {
+    database,
     schema: schema || undefined,
     mask: options.completionContext.prefix,
   };

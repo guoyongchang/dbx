@@ -5385,7 +5385,7 @@ export const useConnectionStore = defineStore("connection", () => {
   ): Promise<SqlCompletionObject[]> {
     const databaseType = getConfig(connectionId)?.db_type;
     const oracleAssistant = databaseType === "oracle";
-    const requestedSchema = currentSchema?.trim() || schema?.trim() || undefined;
+    const requestedSchema = schema?.trim() || currentSchema?.trim() || undefined;
     const preferredSchema = oracleAssistant ? completionPreferredSchema(connectionId, currentSchema) : requestedSchema || (databaseType === "postgres" ? "public" : databaseType === "mysql" ? database : undefined);
     const response = await completionAssistantSearch({
       connection_id: connectionId,

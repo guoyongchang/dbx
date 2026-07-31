@@ -597,6 +597,37 @@ describe("connectionStore completion assistant", () => {
     ]);
   });
 
+  it("prefers an explicit SQL Server routine schema over the current default schema", async () => {
+    const completionAssistantSearch = vi.fn().mockResolvedValue({
+      candidates: [{ name: "calculate_tax", kind: "function", schema: "sales", data_type: "decimal" }],
+      incomplete: false,
+      fallback_used: false,
+    });
+
+    vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
+    vi.doMock("@/lib/backend/api", () => ({
+      checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
+      completionAssistantSearch,
+      listCompletionObjects: vi.fn().mockResolvedValue([]),
+    }));
+
+    const { useConnectionStore } = await import("@/stores/connectionStore");
+    const store = useConnectionStore();
+    store.connections = [sqlServerConnection()];
+    store.connectedIds.add("sqlserver-1");
+
+    await store.listCompletionObjects("sqlserver-1", "BarDB", "calculate_", 20, "sales", undefined, false, "app_user");
+
+    expect(completionAssistantSearch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        database: "BarDB",
+        schema: "sales",
+        parent_schema: "sales",
+        mask: "calculate_",
+      }),
+    );
+  });
+
   it("caches SQL Server completion context independently for each database", async () => {
     const getSqlServerCompletionContext = vi.fn(async (_connectionId: string, database: string) => ({
       default_schema: database === "BarDB" ? "bar_user" : "foo_user",

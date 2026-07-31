@@ -108,9 +108,10 @@ const SQLSERVER_COMPLETION_CONTEXT_SQL: &str = "\
     CONVERT(int, SERVERPROPERTY(N'EngineEdition')) AS engine_edition";
 
 fn sqlserver_supports_session_database_switch(engine_edition: i32) -> bool {
-    // Azure SQL Database and Azure Synapse endpoints require callers to open a
-    // connection directly to the target database instead of issuing USE.
-    !matches!(engine_edition, 5 | 6 | 11)
+    // Only known boxed SQL Server, Managed Instance, and SQL Edge editions are
+    // allowed to switch databases. Cloud single-database endpoints and future
+    // editions default to opening a connection directly to the target database.
+    matches!(engine_edition, 1 | 2 | 3 | 4 | 8 | 9)
 }
 
 fn sqlserver_completion_context(
@@ -3015,8 +3016,11 @@ mod tests {
         assert!(!sqlserver_supports_session_database_switch(5));
         assert!(!sqlserver_supports_session_database_switch(6));
         assert!(!sqlserver_supports_session_database_switch(11));
+        assert!(!sqlserver_supports_session_database_switch(12));
+        assert!(!sqlserver_supports_session_database_switch(99));
         assert!(sqlserver_supports_session_database_switch(3));
         assert!(sqlserver_supports_session_database_switch(8));
+        assert!(sqlserver_supports_session_database_switch(9));
     }
 
     #[test]
