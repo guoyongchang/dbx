@@ -44,7 +44,17 @@ import { buildSqlSemanticModel } from "@/lib/sql/semantic/model";
 import { mergeSqlSemanticReferenceAnalysis, resolveSqlSemanticNavigationTarget } from "@/lib/sql/semantic/references";
 import { buildElasticsearchCompletionItemsFromContext, getElasticsearchCompletionContext, getElasticsearchCompletionResultValidFor, shouldAutoOpenElasticsearchCompletion, type ElasticsearchCompletionItem } from "@/lib/elasticsearch/elasticsearchCompletion";
 import { buildMongoCompletionItemsFromContext, getMongoCompletionContext, getMongoCompletionResultValidFor, mongoCompletionNeedsCollections, mongoCompletionNeedsFields, shouldAutoOpenMongoCompletion, type MongoCompletionItem } from "@/lib/mongo/mongoCompletion";
-import { mergeSqlCompletionQualifierNames, resolveSqlCompletionRoutineLookupTarget, resolveSqlCompletionSchemaLookupDatabase, resolveSqlCompletionScope, resolveSqlCompletionTableLookupTarget, type SqlCompletionScope } from "@/lib/sql/sqlCompletionLookupTarget";
+import {
+  buildSqlServerUseDatabaseCompletionItems,
+  mergeSqlCompletionQualifierNames,
+  resolveSqlCompletionRoutineLookupTarget,
+  resolveSqlCompletionSchemaLookupDatabase,
+  resolveSqlCompletionScope,
+  resolveSqlCompletionTableLookupTarget,
+  resolveSqlServerUseDatabaseCompletion,
+  sqlServerUseDatabaseBeforeCursor,
+  type SqlCompletionScope,
+} from "@/lib/sql/sqlCompletionLookupTarget";
 import { usesOracleSessionCompletionColumns as shouldUseOracleSessionCompletionColumns } from "@/lib/sql/oracleCompletionSession";
 import { extractIdentifierDetailsAt, isSqlKeyword, matchTable, mergeSqlObjectNavigationType, splitQualifiedIdentifier, sqlObjectHoverDetail, sqlObjectNavigationTarget, type SqlObjectNavigationTarget } from "@/lib/sql/sqlNavigation";
 import { buildHoverTableSql, hoverTableMatchesScope, quoteQualifiedName, reformatHoverDdl, scopeHoverTables, type HoverTableScope } from "@/lib/editor/hoverTableSql";
@@ -2477,7 +2487,8 @@ function isTypedCompletionActivation(explicit: boolean) {
 }
 
 function markCompletionAccepted(item: QueryCompletionItem) {
-  suppressNextSqlCompletionAutoStartUntil = shouldChainSqlCompletionAfterAccept(item) ? 0 : Date.now() + 750;
+  const shouldContinueCompletion = shouldChainSqlCompletionAfterAccept(item) || (props.databaseType === "sqlserver" && item.type === "keyword" && item.label.toUpperCase() === "USE");
+  suppressNextSqlCompletionAutoStartUntil = shouldContinueCompletion ? 0 : Date.now() + 750;
   completionEpoch++;
 }
 
@@ -2705,7 +2716,24 @@ async function provideSqlCompletions(context: CompletionContext) {
 
   try {
     if (isSqlCompletionSuppressedContext(fullDoc, position)) return null;
-    if (!explicit && !shouldAutoOpenSqlCompletion(fullDoc, position, sqlCompletionDialectOptions())) return null;
+    const useDatabaseCompletion = resolveSqlServerUseDatabaseCompletion({
+      sql: fullDoc,
+      cursor: position,
+      databaseType: props.databaseType,
+    });
+    if (!explicit && !useDatabaseCompletion && !shouldAutoOpenSqlCompletion(fullDoc, position, sqlCompletionDialectOptions())) return null;
+
+    if (useDatabaseCompletion) {
+      try {
+        await connectionStore.listCompletionDatabases(props.connectionId);
+      } catch {
+        // Keep locally indexed database names available when metadata refresh fails.
+      }
+      if (epoch !== completionEpoch) return null;
+      const databaseNames = connectionStore.lookupLocalCompletionDatabases(props.connectionId, useDatabaseCompletion.prefix, MAX_COMPLETION_TABLES);
+      const items = buildSqlServerUseDatabaseCompletionItems(databaseNames, useDatabaseCompletion);
+      return buildCompletionResult(items, useDatabaseCompletion.from);
+    }
 
     const legacyCompletionContext = getSqlCompletionContext(fullDoc, position, sqlCompletionDialectOptions());
     const semanticModel = SEMANTIC_SQL_COMPLETION_ENABLED ? buildSqlSemanticModel(fullDoc, position, sqlCompletionDialectOptions()) : null;
@@ -2728,12 +2756,27 @@ async function provideSqlCompletions(context: CompletionContext) {
       return buildCompletionResult(items, position - completionContext.prefix.length, getSqlCompletionResultValidFor(fullDoc, position));
     }
 
+    const useDatabase = props.databaseType === "sqlserver" ? sqlServerUseDatabaseBeforeCursor(fullDoc, position) : undefined;
+    let knownUseDatabases: string[] | undefined;
+    if (useDatabase) {
+      knownUseDatabases = mergeSqlCompletionQualifierNames([props.database!], connectionStore.lookupLocalCompletionDatabases(props.connectionId, "", MAX_COMPLETION_TABLES));
+      if (!knownUseDatabases.some((database) => database.toLowerCase() === useDatabase.toLowerCase())) {
+        try {
+          knownUseDatabases = mergeSqlCompletionQualifierNames([props.database!], await connectionStore.listCompletionDatabases(props.connectionId));
+        } catch {
+          // An unverified USE target must not replace the selected database.
+        }
+        if (epoch !== completionEpoch) return null;
+      }
+    }
+
     const completionScope = resolveSqlCompletionScope({
       sql: fullDoc,
       cursor: position,
       databaseType: props.databaseType,
       currentDatabase: props.database!,
       currentSchema: props.schema,
+      knownDatabases: knownUseDatabases,
       completionContext,
     });
     completionContext = completionScope.completionContext;
@@ -2828,7 +2871,9 @@ function flushImeComposition() {
   emit("cursorChange", currentView.state.selection.main.head);
   latestSelection = readEditorSelection(currentView);
   if (editorIsActive) emitEditorSelection(latestSelection);
-  if (shouldAutoOpenSqlCompletion(currentView.state.doc.toString(), currentView.state.selection.main.head, sqlCompletionDialectOptions())) {
+  const fullDoc = currentView.state.doc.toString();
+  const position = currentView.state.selection.main.head;
+  if (resolveSqlServerUseDatabaseCompletion({ sql: fullDoc, cursor: position, databaseType: props.databaseType }) || shouldAutoOpenSqlCompletion(fullDoc, position, sqlCompletionDialectOptions())) {
     scheduleSqlCompletionStart(currentView);
   }
 }
@@ -2836,6 +2881,7 @@ function flushImeComposition() {
 function shouldStartSqlCompletionAfterInput(insertedText: string, removedText: string, currentView: EditorViewType): boolean {
   const position = currentView.state.selection.main.head;
   const fullDoc = currentView.state.doc.toString();
+  if (resolveSqlServerUseDatabaseCompletion({ sql: fullDoc, cursor: position, databaseType: props.databaseType })) return true;
   if (!insertedText && removedText) {
     const completionContext = getSqlCompletionContext(fullDoc, position, sqlCompletionDialectOptions());
     return isTableNameCompletionContext(completionContext) && shouldAutoOpenSqlCompletion(fullDoc, position, sqlCompletionDialectOptions());

@@ -1,5 +1,5 @@
-import type { SqlCompletionContext } from "@/lib/sql/sqlCompletion";
-import { executableStatementRanges } from "@/lib/sql/sqlStatementRanges";
+import type { SqlCompletionContext, SqlCompletionItem } from "@/lib/sql/sqlCompletion";
+import { currentExecutableStatementRange, executableStatementRanges } from "@/lib/sql/sqlStatementRanges";
 import type { DatabaseType } from "@/types/database";
 
 export interface SqlCompletionTableLookupTarget {
@@ -18,6 +18,12 @@ export interface SqlCompletionScope {
   database: string;
   schema?: string;
   completionContext: SqlCompletionContext;
+}
+
+export interface SqlServerUseDatabaseCompletion {
+  from: number;
+  prefix: string;
+  quoteStyle: "none" | "bracket" | "double";
 }
 
 function sqlStatementWithoutLeadingComments(statement: string): string {
@@ -47,7 +53,7 @@ function sqlServerUseDatabase(statement: string): string | undefined {
   return match[3];
 }
 
-function sqlServerUseDatabaseBeforeCursor(sql: string, cursor: number): string | undefined {
+export function sqlServerUseDatabaseBeforeCursor(sql: string, cursor: number): string | undefined {
   const position = Math.max(0, Math.min(cursor, sql.length));
   let database: string | undefined;
   for (const statement of executableStatementRanges(sql, "sqlserver")) {
@@ -57,7 +63,78 @@ function sqlServerUseDatabaseBeforeCursor(sql: string, cursor: number): string |
   return database;
 }
 
-export function resolveSqlCompletionScope(options: { sql: string; cursor: number; databaseType?: DatabaseType; currentDatabase: string; currentSchema?: string; completionContext: SqlCompletionContext }): SqlCompletionScope {
+function unclosedQuotedIdentifierPrefix(value: string, quoteStyle: "bracket" | "double"): string | undefined {
+  const closingQuote = quoteStyle === "bracket" ? "]" : '"';
+  let prefix = "";
+  for (let index = 1; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (character !== closingQuote) {
+      prefix += character;
+      continue;
+    }
+    if (value[index + 1] !== closingQuote) return undefined;
+    prefix += closingQuote;
+    index += 1;
+  }
+  return prefix;
+}
+
+export function resolveSqlServerUseDatabaseCompletion(options: { sql: string; cursor: number; databaseType?: DatabaseType }): SqlServerUseDatabaseCompletion | undefined {
+  if (options.databaseType !== "sqlserver") return undefined;
+  const position = Math.max(0, Math.min(options.cursor, options.sql.length));
+  const statement = currentExecutableStatementRange(options.sql, position, "sqlserver");
+  if (!statement || (statement.to > position && options.sql.slice(position, statement.to).trim())) return undefined;
+
+  const beforeCursor = options.sql.slice(statement.from, position);
+  const useMatch = /^USE(?=\s)/iu.exec(beforeCursor);
+  if (!useMatch) return undefined;
+
+  let targetOffset = useMatch[0].length;
+  while (targetOffset < beforeCursor.length && /\s/u.test(beforeCursor[targetOffset]!)) targetOffset += 1;
+
+  const target = beforeCursor.slice(targetOffset);
+  if (!target) {
+    return {
+      from: statement.from + targetOffset,
+      prefix: "",
+      quoteStyle: "none",
+    };
+  }
+  if (/^[\p{L}_@#][\p{L}\p{N}_@$#]*$/u.test(target)) {
+    return {
+      from: statement.from + targetOffset,
+      prefix: target,
+      quoteStyle: "none",
+    };
+  }
+
+  const quoteStyle = target[0] === "[" ? "bracket" : target[0] === '"' ? "double" : undefined;
+  if (!quoteStyle) return undefined;
+  const prefix = unclosedQuotedIdentifierPrefix(target, quoteStyle);
+  if (prefix === undefined) return undefined;
+  return {
+    from: statement.from + targetOffset + 1,
+    prefix,
+    quoteStyle,
+  };
+}
+
+export function buildSqlServerUseDatabaseCompletionItems(databaseNames: readonly string[], completion: SqlServerUseDatabaseCompletion): SqlCompletionItem[] {
+  return databaseNames.map((database) => {
+    const escapedDatabase = completion.quoteStyle === "double" ? database.replaceAll('"', '""') : database.replaceAll("]", "]]");
+    const apply = completion.quoteStyle === "bracket" ? `${escapedDatabase}]` : completion.quoteStyle === "double" ? `${escapedDatabase}"` : `[${escapedDatabase}]`;
+    return {
+      label: database,
+      filterText: completion.quoteStyle === "none" ? database : escapedDatabase,
+      type: "schema",
+      detail: "database",
+      apply,
+      boost: 1_500,
+    };
+  });
+}
+
+export function resolveSqlCompletionScope(options: { sql: string; cursor: number; databaseType?: DatabaseType; currentDatabase: string; currentSchema?: string; knownDatabases?: readonly string[]; completionContext: SqlCompletionContext }): SqlCompletionScope {
   if (options.databaseType !== "sqlserver") {
     return {
       database: options.currentDatabase,
@@ -65,7 +142,8 @@ export function resolveSqlCompletionScope(options: { sql: string; cursor: number
       completionContext: options.completionContext,
     };
   }
-  const database = sqlServerUseDatabaseBeforeCursor(options.sql, options.cursor);
+  const parsedDatabase = sqlServerUseDatabaseBeforeCursor(options.sql, options.cursor);
+  const database = parsedDatabase && options.knownDatabases !== undefined ? findExactName(options.knownDatabases, parsedDatabase) : parsedDatabase;
   if (!database) {
     return {
       database: options.currentDatabase,
