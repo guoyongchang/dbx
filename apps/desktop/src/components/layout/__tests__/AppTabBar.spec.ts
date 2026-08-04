@@ -53,4 +53,14 @@ describe("AppTabBar right-side close action", () => {
       expect(position).toBeLessThan(closeAllPositions[index]);
     });
   });
+
+  it("waits for query tab confirmation before closing special surfaces", () => {
+    expect(tabBarSource).toMatch(/queryStore\.closeRightTabs\(tab\.id, \(\) => \{[\s\S]*closeSpecialRegularSurfaces\(\);/);
+    expect(tabBarSource).toContain("if (shouldActivateTarget) activateTab(tab.id)");
+  });
+
+  it("reactivates settings after closing an active driver store to its right", () => {
+    expect(tabBarSource).toContain("const shouldActivateSettings = !!props.driverStoreActive");
+    expect(tabBarSource).toMatch(/emit\("close-driver-store"\);\s*if \(shouldActivateSettings\) emit\("activate-settings-page"\);/);
+  });
 });

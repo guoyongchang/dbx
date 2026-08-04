@@ -768,13 +768,17 @@ test("close right tabs only closes tabs to the right in the same group", () => {
     false,
   );
 
-  store.closeRightTabs(targetId);
+  let completions = 0;
+  store.closeRightTabs(targetId, () => {
+    completions += 1;
+  });
 
   assert.deepEqual(
     store.tabs.map((tab) => tab.id),
     [fixedId, targetId],
   );
   assert.equal(store.activeTabId, targetId);
+  assert.equal(completions, 1);
 });
 
 test("close right fixed tabs keeps regular tabs and a retained active tab", () => {
@@ -821,6 +825,38 @@ test("close right tabs pauses before closing an unsaved query", () => {
     [targetId],
   );
   assert.equal(store.activeTabId, targetId);
+});
+
+test("close right tabs only runs completion after the pending batch succeeds", () => {
+  setActivePinia(createPinia());
+  const store = useQueryStore();
+  const targetId = store.createTab("conn-1", "db", "target");
+  const dirtyId = store.createTab("conn-1", "db", "dirty");
+  store.updateSql(dirtyId, "select 1;");
+  let completions = 0;
+
+  store.closeRightTabs(targetId, () => {
+    completions += 1;
+  });
+  assert.equal(completions, 0);
+
+  store.cancelClosePendingTab();
+  assert.equal(completions, 0);
+  assert.deepEqual(
+    store.tabs.map((tab) => tab.id),
+    [targetId, dirtyId],
+  );
+
+  store.closeRightTabs(targetId, () => {
+    completions += 1;
+  });
+  store.forceClosePendingTab();
+
+  assert.equal(completions, 1);
+  assert.deepEqual(
+    store.tabs.map((tab) => tab.id),
+    [targetId],
+  );
 });
 
 test("close other tabs pauses on restored unsaved query tabs", async () => {

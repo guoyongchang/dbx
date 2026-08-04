@@ -195,8 +195,12 @@ function hasTabsToRight(tab: QueryTab) {
 }
 
 function closeTabsToRightFromTab(tab: QueryTab) {
-  queryStore.closeRightTabs(tab.id);
-  if (!tab.pinned) closeSpecialRegularSurfaces();
+  const shouldActivateTarget = !tab.pinned && (!!props.settingsPageActive || !!props.driverStoreActive);
+  queryStore.closeRightTabs(tab.id, () => {
+    if (tab.pinned) return;
+    closeSpecialRegularSurfaces();
+    if (shouldActivateTarget) activateTab(tab.id);
+  });
 }
 
 function hasSpecialRegularSurfaceToRight(surface: SpecialRegularSurface) {
@@ -204,7 +208,10 @@ function hasSpecialRegularSurfaceToRight(surface: SpecialRegularSurface) {
 }
 
 function closeSpecialRegularSurfacesToRight(surface: SpecialRegularSurface) {
-  if (surface === "settings" && props.driverStoreOpen) emit("close-driver-store");
+  if (surface !== "settings" || !props.driverStoreOpen) return;
+  const shouldActivateSettings = !!props.driverStoreActive;
+  emit("close-driver-store");
+  if (shouldActivateSettings) emit("activate-settings-page");
 }
 
 function closeAllRegularSurfaces() {
