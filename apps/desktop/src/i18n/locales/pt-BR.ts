@@ -2283,6 +2283,7 @@ export default withEnglishFallback({
     createFunction: "Nova função",
     createTrigger: "Novo gatilho",
     changeOpenMode: "Alterar modo de abertura",
+    closeRightTabs: "Fechar abas à direita",
   },
   visibleDatabases: {
     title: "Bancos de dados visíveis",
